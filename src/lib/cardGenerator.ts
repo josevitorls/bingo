@@ -21,8 +21,8 @@ export function generateCard(
     const bandMax =
       col === 4 ? rangeMax : rangeMin + (col + 1) * bandSize - 1;
 
-    const pool = shuffle(range(bandMin, bandMax));
-    numbers.push(pool.slice(0, 5));
+    const pool = shuffle(range(bandMin, bandMax)).slice(0, 5).sort((a, b) => a - b);
+    numbers.push(pool);
     marked.push([false, false, false, false, false]);
   }
 

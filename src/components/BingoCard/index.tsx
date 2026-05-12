@@ -13,7 +13,7 @@ interface BingoCardProps {
 
 const COLUMN_LABELS = ['B', 'I', 'N', 'G', 'O'];
 
-export const BingoCard: React.FC<BingoCardProps> = ({
+export const BingoCard: React.FC<BingoCardProps> = React.memo(({
   card,
   drawnNumbers = [],
   onCellClick,
@@ -51,7 +51,7 @@ export const BingoCard: React.FC<BingoCardProps> = ({
       : 'text-base sm:text-lg';
 
   return (
-    <div className="w-full max-w-sm mx-auto">
+    <div className="w-full max-w-sm mx-auto" style={{ contain: 'content' }}>
       {/* Card container */}
       <div
         className={`rounded-2xl overflow-hidden shadow-2xl ${
@@ -130,4 +130,6 @@ export const BingoCard: React.FC<BingoCardProps> = ({
       </div>
     </div>
   );
-};
+});
+
+BingoCard.displayName = 'BingoCard';

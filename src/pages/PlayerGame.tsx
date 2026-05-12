@@ -17,6 +17,7 @@ export const PlayerGame: React.FC = () => {
   const { t } = useTranslation();
 
   const [game, setGame] = useState<Game | null>(null);
+  const [drawnNumbers, setDrawnNumbers] = useState<number[]>([]);
   const [myGamePlayer, setMyGamePlayer] = useState<GamePlayer | null>(null);
   const [card, setCard] = useState<BingoCardData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -57,6 +58,7 @@ export const PlayerGame: React.FC = () => {
       .maybeSingle();
 
     setGame(gameData as Game);
+    setDrawnNumbers((gameData as Game).drawn_numbers ?? []);
 
     if (gpData) {
       const gp = gpData as GamePlayer;
@@ -82,6 +84,7 @@ export const PlayerGame: React.FC = () => {
     const unsubscribe = subscribeToGame(code, (msg) => {
       if (msg.type === 'draw') {
         const payload = msg.payload as { number: number; drawnNumbers: number[] };
+        setDrawnNumbers(payload.drawnNumbers);
         setGame((g) => g ? { ...g, drawn_numbers: payload.drawnNumbers } : g);
         toast(`🎱 ${payload.number}`, { duration: 2000 });
       } else if (msg.type === 'status') {
@@ -122,10 +125,9 @@ export const PlayerGame: React.FC = () => {
       if (!card || !game) return;
       if (row === 2 && col === 2) return; // FREE cell
 
-      // Check if number was drawn
-      if (number !== 0 && !game.drawn_numbers.includes(number)) {
+      // Warn if number not drawn yet, but still allow marking
+      if (number !== 0 && !drawnNumbers.includes(number)) {
         toast(t('game.cellNotDrawn'), { icon: '⚠️' });
-        return;
       }
 
       const newMarked = card.marked.map((r, ri) =>
@@ -196,8 +198,8 @@ export const PlayerGame: React.FC = () => {
   }
 
   const lastDrawn =
-    game.drawn_numbers.length > 0
-      ? game.drawn_numbers[game.drawn_numbers.length - 1]
+    drawnNumbers.length > 0
+      ? drawnNumbers[drawnNumbers.length - 1]
       : null;
 
   return (
@@ -245,12 +247,10 @@ export const PlayerGame: React.FC = () => {
 
         {/* Last drawn number */}
         {lastDrawn && (
-          <div
-            className="text-center py-3 mb-4 glass-card"
-            key={lastDrawn}
-          >
+          <div className="text-center py-3 mb-4 glass-card">
             <div className="text-xs text-white/50 mb-1">{t('game.lastDrawn')}</div>
             <div
+              key={lastDrawn}
               className="font-title text-5xl sm:text-6xl animate-number-pop"
               style={{ color: 'var(--gold)' }}
             >
@@ -277,7 +277,7 @@ export const PlayerGame: React.FC = () => {
             </h2>
             <BingoCard
               card={card}
-              drawnNumbers={game.drawn_numbers}
+              drawnNumbers={drawnNumbers}
               onCellClick={game.status === 'running' ? handleCellClick : undefined}
               readonly={game.status !== 'running'}
               size="md"
@@ -320,15 +320,15 @@ export const PlayerGame: React.FC = () => {
           {/* Right: Number board */}
           <div className="glass-card p-4">
             <h2 className="text-white/70 text-sm font-semibold mb-3 uppercase tracking-wide">
-              {t('game.drawnNumbers')} ({game.drawn_numbers.length})
+              {t('game.drawnNumbers')} ({drawnNumbers.length})
             </h2>
-            {game.drawn_numbers.length === 0 ? (
+            {drawnNumbers.length === 0 ? (
               <div className="text-center text-white/40 py-4 text-sm">
                 {t('game.noNumbers')}
               </div>
             ) : (
               <NumberBoard
-                drawnNumbers={game.drawn_numbers}
+                drawnNumbers={drawnNumbers}
                 rangeMin={game.number_range_min}
                 rangeMax={game.number_range_max}
                 lastDrawn={lastDrawn}
@@ -336,11 +336,11 @@ export const PlayerGame: React.FC = () => {
             )}
 
             {/* Drawn order history */}
-            {game.drawn_numbers.length > 0 && (
+            {drawnNumbers.length > 0 && (
               <div className="mt-4">
                 <div className="text-xs text-white/40 mb-2">Ordem dos sorteios</div>
                 <div className="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
-                  {[...game.drawn_numbers].reverse().map((n, i) => (
+                  {[...drawnNumbers].reverse().map((n, i) => (
                     <span
                       key={`${n}-${i}`}
                       className="px-1.5 py-0.5 rounded text-xs font-bold"
