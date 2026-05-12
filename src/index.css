@@ -63,8 +63,8 @@ html, body {
 }
 
 @keyframes gold-glow {
-  0%, 100% { text-shadow: 0 0 8px #FFCC00, 0 0 20px #FFCC00; }
-  50%       { text-shadow: 0 0 20px #FFCC00, 0 0 40px #FFCC00, 0 0 80px #FFCC00; }
+  0%, 100% { text-shadow: 0 0 4px #FFCC00, 0 0 8px rgba(255,204,0,0.5); }
+  50%       { text-shadow: 0 0 8px #FFCC00, 0 0 16px rgba(255,204,0,0.4); }
 }
 
 @keyframes bounce-in {
