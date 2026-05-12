@@ -271,7 +271,6 @@ export const HostPanel: React.FC = () => {
                 </h2>
                 <BingoCard
                   card={myGamePlayer.card}
-                  drawnNumbers={game.drawn_numbers}
                   readonly
                   size="sm"
                 />

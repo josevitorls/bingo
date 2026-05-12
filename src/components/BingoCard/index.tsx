@@ -5,7 +5,6 @@ import type { BingoCardData } from '../../types';
 
 interface BingoCardProps {
   card: BingoCardData;
-  drawnNumbers?: number[];
   onCellClick?: (row: number, col: number, number: number) => void;
   readonly?: boolean;
   size?: 'sm' | 'md' | 'lg';
@@ -15,7 +14,6 @@ const COLUMN_LABELS = ['B', 'I', 'N', 'G', 'O'];
 
 export const BingoCard: React.FC<BingoCardProps> = React.memo(({
   card,
-  drawnNumbers = [],
   onCellClick,
   readonly = false,
   size = 'md',
