@@ -1,0 +1,260 @@
+@import url('https://fonts.googleapis.com/css2?family=Black+Han+Sans&family=Nunito:wght@400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ============================================================
+   CSS CUSTOM PROPERTIES
+   ============================================================ */
+:root {
+  --red:       #e02020;
+  --red-bg:    #ffeaea;
+  --green:     #1aab5a;
+  --green-bg:  #e6fff2;
+  --blue-glow: #2979ff;
+  --gold:      #FFCC00;
+  --dark:      #1a1a2e;
+  --card-bg:   #ffffff;
+}
+
+/* ============================================================
+   BASE STYLES
+   ============================================================ */
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: 'Nunito', sans-serif;
+  background: radial-gradient(ellipse at 20% 40%, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+  min-height: 100vh;
+  color: #ffffff;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+/* ============================================================
+   TYPOGRAPHY
+   ============================================================ */
+.font-title {
+  font-family: 'Black Han Sans', sans-serif;
+}
+
+.font-body {
+  font-family: 'Nunito', sans-serif;
+}
+
+/* ============================================================
+   KEYFRAME ANIMATIONS
+   ============================================================ */
+@keyframes bingo-pulse {
+  0%, 100% { box-shadow: 0 0 8px #2979ff; }
+  50%       { box-shadow: 0 0 20px #2979ff, 0 0 40px #2979ff; }
+}
+
+@keyframes full-bingo {
+  0%, 100% { box-shadow: 0 0 8px #2979ff; }
+  50%       { box-shadow: 0 0 20px #FFCC00, 0 0 40px #FFCC00; }
+}
+
+@keyframes gold-glow {
+  0%, 100% { text-shadow: 0 0 8px #FFCC00, 0 0 20px #FFCC00; }
+  50%       { text-shadow: 0 0 20px #FFCC00, 0 0 40px #FFCC00, 0 0 80px #FFCC00; }
+}
+
+@keyframes bounce-in {
+  0%   { transform: scale(0.3); opacity: 0; }
+  50%  { transform: scale(1.05); opacity: 1; }
+  70%  { transform: scale(0.9); }
+  100% { transform: scale(1); }
+}
+
+@keyframes number-pop {
+  0%   { transform: scale(0); opacity: 0; }
+  60%  { transform: scale(1.2); }
+  100% { transform: scale(1); opacity: 1; }
+}
+
+/* ============================================================
+   UTILITY CLASSES
+   ============================================================ */
+.animate-bingo-pulse {
+  animation: bingo-pulse 1s infinite;
+}
+
+.animate-full-bingo {
+  animation: full-bingo 1.2s infinite;
+}
+
+.animate-gold-glow {
+  animation: gold-glow 1.5s infinite;
+}
+
+.animate-bounce-in {
+  animation: bounce-in 0.5s ease-out;
+}
+
+.animate-number-pop {
+  animation: number-pop 0.4s ease-out;
+}
+
+/* ============================================================
+   BINGO CARD STYLES
+   ============================================================ */
+.bingo-cell {
+  aspect-ratio: 1 / 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+  user-select: none;
+  font-family: 'Nunito', sans-serif;
+}
+
+.bingo-cell:hover:not(.free-cell) {
+  transform: scale(1.05);
+}
+
+.bingo-cell.unmarked {
+  background-color: var(--red-bg);
+  color: var(--red);
+}
+
+.bingo-cell.marked {
+  background-color: var(--green-bg);
+  color: var(--green);
+}
+
+.bingo-cell.free-cell {
+  background-color: var(--green-bg);
+  color: var(--green);
+  cursor: default;
+}
+
+.bingo-cell.partial {
+  animation: bingo-pulse 1s infinite;
+}
+
+.bingo-cell.full {
+  animation: full-bingo 1.2s infinite;
+}
+
+/* ============================================================
+   SCROLLBAR
+   ============================================================ */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: rgba(255,255,255,0.05);
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.2);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.35);
+}
+
+/* ============================================================
+   GLASS CARD
+   ============================================================ */
+.glass-card {
+  background: rgba(255, 255, 255, 0.07);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 16px;
+}
+
+/* ============================================================
+   BUTTON VARIANTS
+   ============================================================ */
+.btn-primary {
+  background: var(--gold);
+  color: #1a1a2e;
+  font-weight: 800;
+  font-family: 'Nunito', sans-serif;
+  border: none;
+  border-radius: 12px;
+  padding: 12px 28px;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.15s;
+}
+
+.btn-primary:hover {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.btn-primary:active {
+  transform: translateY(0);
+}
+
+.btn-secondary {
+  background: rgba(255,255,255,0.12);
+  color: #ffffff;
+  font-weight: 700;
+  font-family: 'Nunito', sans-serif;
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 12px;
+  padding: 12px 28px;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.15s;
+}
+
+.btn-secondary:hover {
+  background: rgba(255,255,255,0.2);
+  transform: translateY(-1px);
+}
+
+.btn-danger {
+  background: #e02020;
+  color: #ffffff;
+  font-weight: 700;
+  font-family: 'Nunito', sans-serif;
+  border: none;
+  border-radius: 12px;
+  padding: 12px 28px;
+  cursor: pointer;
+  transition: opacity 0.2s, transform 0.15s;
+}
+
+.btn-danger:hover {
+  opacity: 0.85;
+  transform: translateY(-1px);
+}
+
+/* ============================================================
+   INPUT STYLES
+   ============================================================ */
+.input-field {
+  background: rgba(255,255,255,0.1);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 10px;
+  color: #ffffff;
+  padding: 10px 16px;
+  font-family: 'Nunito', sans-serif;
+  font-size: 1rem;
+  outline: none;
+  transition: border-color 0.2s;
+  width: 100%;
+}
+
+.input-field::placeholder {
+  color: rgba(255,255,255,0.4);
+}
+
+.input-field:focus {
+  border-color: var(--gold);
+}
