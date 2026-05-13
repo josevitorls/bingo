@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
@@ -9,7 +9,7 @@ import { DrawPanel } from '../components/DrawPanel';
 import { PlayerList } from '../components/PlayerList';
 import { BingoNotification } from '../components/BingoNotification';
 import { BingoCard } from '../components/BingoCard';
-import type { GamePlayer } from '../types';
+import type { BingoCardData, GamePlayer } from '../types';
 
 export const HostPanel: React.FC = () => {
   const { code } = useParams<{ code: string }>();
@@ -22,6 +22,51 @@ export const HostPanel: React.FC = () => {
   const currentPlayer = storedPlayer ? JSON.parse(storedPlayer) : null;
 
   const [copied, setCopied] = useState(false);
+
+  // Host's own card state (when host also plays)
+  const [hostCard, setHostCard] = useState<BingoCardData | null>(null);
+  const hostCardRef = useRef<BingoCardData | null>(null);
+  const hostGpIdRef = useRef<string | null>(null);
+  const drawnRef = useRef<number[]>([]);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Sync host card from players list once loaded
+  useEffect(() => {
+    if (!currentPlayer || hostCard) return;
+    const gp = players.find((p) => p.player_id === currentPlayer.id);
+    if (gp) {
+      setHostCard(gp.card);
+      hostCardRef.current = gp.card;
+      hostGpIdRef.current = gp.id;
+    }
+  }, [players, currentPlayer, hostCard]);
+
+  // Keep drawnRef in sync
+  useEffect(() => {
+    if (game) drawnRef.current = game.drawn_numbers;
+  }, [game?.drawn_numbers]);
+
+  const persistHostCard = useCallback(async (card: BingoCardData) => {
+    if (!hostGpIdRef.current) return;
+    await supabase.from('game_players').update({ card }).eq('id', hostGpIdRef.current);
+  }, []);
+
+  const handleHostCellClick = useCallback((row: number, col: number, number: number) => {
+    const current = hostCardRef.current;
+    if (!current) return;
+    if (row === 2 && col === 2) return;
+    if (number !== 0 && !drawnRef.current.includes(number)) {
+      toast(`⚠️ Número ${number} ainda não foi sorteado`);
+    }
+    const newMarked = current.marked.map((r, ri) =>
+      r.map((val, ci) => (ri === row && ci === col ? !val : val))
+    );
+    const newCard = { ...current, marked: newMarked };
+    setHostCard(newCard);
+    hostCardRef.current = newCard;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    debounceRef.current = setTimeout(() => persistHostCard(newCard), 500);
+  }, [persistHostCard]);
 
   // Verify host access
   useEffect(() => {
@@ -264,15 +309,15 @@ export const HostPanel: React.FC = () => {
               />
             </div>
 
-            {/* Host's own card */}
-            {myGamePlayer && (
+            {/* Host's own card — fully interactive when game is running */}
+            {myGamePlayer && hostCard && (
               <div className="glass-card p-4">
                 <h2 className="text-white/70 text-sm font-semibold mb-3 uppercase tracking-wide">
                   {t('host.myCard')}
                 </h2>
                 <BingoCard
-                  card={myGamePlayer.card}
-                  readonly
+                  card={hostCard}
+                  onCellClick={handleHostCellClick}
                   size="sm"
                 />
               </div>
