@@ -10,7 +10,8 @@ export type RealtimeEventType =
   | 'winner'
   | 'tie_decision'
   | 'tie_vote'
-  | 'tie_response';
+  | 'tie_response'
+  | 'game_invite';
 
 export interface RealtimeMessage {
   type: RealtimeEventType;
@@ -55,6 +56,7 @@ export function subscribeToGame(
     'tie_decision',
     'tie_vote',
     'tie_response',
+    'game_invite',
   ];
 
   for (const event of eventTypes) {

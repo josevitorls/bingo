@@ -58,9 +58,17 @@ export const JoinGame: React.FC = () => {
         toast.error(t('join.errors.gameNotFound'));
         return;
       }
-      if (game.status !== 'waiting') {
+      const isAutoMark = (game.mode as string[]).includes('auto_mark');
+      if (game.status === 'finished') {
         toast.error(t('join.errors.gameNotWaiting'));
         return;
+      }
+      if (game.status === 'running' && !isAutoMark) {
+        toast.error(t('join.errors.gameNotWaiting'));
+        return;
+      }
+      if (game.status === 'running' && isAutoMark) {
+        toast(t('join.gameInProgress'), { icon: 'ℹ️', duration: 3000 });
       }
 
       // Get or create player

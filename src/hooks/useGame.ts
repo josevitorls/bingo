@@ -131,6 +131,15 @@ export function useGame(code: string | null) {
     }));
   }, []);
 
+  const setState_resetClaim = useCallback((gpId: string) => {
+    setState((s) => ({
+      ...s,
+      players: s.players.map((p) =>
+        p.id === gpId ? { ...p, bingo_claimed: false, bingo_verified: null } : p
+      ),
+    }));
+  }, []);
+
   return {
     game: state.game,
     players: state.players,
@@ -139,5 +148,6 @@ export function useGame(code: string | null) {
     refetch: fetchGame,
     setState_draw,
     setState_playerVerified,
+    setState_resetClaim,
   };
 }

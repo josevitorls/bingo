@@ -5,6 +5,8 @@ import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { broadcastToGame, subscribeToGame } from '../lib/realtime';
 import { useGame } from '../hooks/useGame';
+import { generateUniqueCode } from '../lib/gameCode';
+import { checkBingo } from '../lib/bingoChecker';
 import { DrawPanel } from '../components/DrawPanel';
 import { PlayerList } from '../components/PlayerList';
 import { BingoNotification } from '../components/BingoNotification';
@@ -12,7 +14,10 @@ import { BingoCard } from '../components/BingoCard';
 import { NumberBoard } from '../components/NumberBoard';
 import type { BingoCardData, GamePlayer, Winner, TieResponsePayload } from '../types';
 
-// ── Isolated last-drawn display (same as PlayerGame) ─────────────────────────
+const PRIZE_TYPES = ['linha', 'coluna', 'diagonal', 'cartela_cheia'] as const;
+type PrizeType = typeof PRIZE_TYPES[number];
+
+// ── Isolated last-drawn display ───────────────────────────────────────────────
 const LastDrawnDisplay = React.memo(({ lastDrawn, t }: { lastDrawn: number | null; t: (k: string) => string }) => {
   if (!lastDrawn) return null;
   return (
@@ -34,19 +39,18 @@ export const HostPanel: React.FC = () => {
   const { code } = useParams<{ code: string }>();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { game, players, loading, refetch, setState_draw, setState_playerVerified } = useGame(code ?? null);
+  const { game, players, loading, refetch, setState_draw, setState_playerVerified, setState_resetClaim } = useGame(code ?? null);
 
   const hostToken = code ? localStorage.getItem(`bingo_host_token_${code}`) : null;
   const storedPlayer = localStorage.getItem('bingo_player');
   const currentPlayer = storedPlayer ? JSON.parse(storedPlayer) : null;
 
   const [copied, setCopied] = useState(false);
-
-  // Improvement 1: Inline end-game confirmation
   const [endConfirming, setEndConfirming] = useState(false);
   const [gameEnded, setGameEnded] = useState(false);
+  const [invitingNewGame, setInvitingNewGame] = useState(false);
 
-  // Improvement 5: Winners tracking
+  // Winners tracking
   const [winners, setWinners] = useState<Winner[]>([]);
 
   // Tie-breaking vote state
@@ -82,18 +86,7 @@ export const HostPanel: React.FC = () => {
     if (game) drawnRef.current = game.drawn_numbers;
   }, [game?.drawn_numbers]);
 
-  // Improvement 3: Auto-mark for host's card on draw events
-  useEffect(() => {
-    if (!code || !game) return;
-    // We detect auto_mark via game.mode
-    if (!game.mode.includes('auto_mark')) return;
-
-    // Subscribe to draw events to auto-mark host card
-    // The draw event is already handled by useGame's realtime,
-    // but we need to react to drawnNumbers changes for auto-mark
-  }, [code, game]);
-
-  // Auto-mark host card when drawnNumbers changes (Improvement 3)
+  // Auto-mark host card when drawnNumbers changes
   useEffect(() => {
     if (!game?.mode.includes('auto_mark')) return;
     const current = hostCardRef.current;
@@ -103,8 +96,8 @@ export const HostPanel: React.FC = () => {
 
     const newMarked = current.numbers.map((row, ri) =>
       row.map((num, ci) => {
-        if (ri === 2 && ci === 2) return true; // FREE
-        if (current.marked[ri][ci]) return true; // already marked
+        if (ri === 2 && ci === 2) return true;
+        if (current.marked[ri][ci]) return true;
         return drawn.includes(num);
       })
     );
@@ -114,7 +107,6 @@ export const HostPanel: React.FC = () => {
     const newCard = { ...current, marked: newMarked };
     setHostCard(newCard);
     hostCardRef.current = newCard;
-    // Persist immediately (no debounce for auto-mark)
     if (hostGpIdRef.current) {
       supabase.from('game_players').update({ card: newCard }).eq('id', hostGpIdRef.current);
     }
@@ -126,7 +118,6 @@ export const HostPanel: React.FC = () => {
     await supabase.from('game_players').update({ card }).eq('id', hostGpIdRef.current);
   }, []);
 
-  // Improvement 4: Traditional mode = no auto_mark AND no cartela_cheia
   const isTraditionalMode = game
     ? !game.mode.includes('auto_mark') && !game.mode.includes('cartela_cheia')
     : true;
@@ -135,7 +126,6 @@ export const HostPanel: React.FC = () => {
     const current = hostCardRef.current;
     if (!current) return;
     if (row === 2 && col === 2) return;
-    // Improvement 4: only warn if NOT traditional mode
     if (!isTraditionalMode && number !== 0 && !drawnRef.current.includes(number)) {
       toast(`⚠️ Número ${number} ainda não foi sorteado`);
     }
@@ -181,13 +171,12 @@ export const HostPanel: React.FC = () => {
       await broadcastToGame(game.code, 'status', { status: 'running' });
       toast.success(t('host.gameStarted'));
       refetch();
-    } catch (err) {
+    } catch {
       toast.error('Erro ao iniciar o jogo');
     }
   };
 
-  // Improvement 1: Inline end game (no confirm())
-  const handleEndGame = async () => {
+  const handleEndGame = useCallback(async () => {
     if (!game || !hostToken) return;
     try {
       await supabase.rpc('update_game_status', {
@@ -200,10 +189,10 @@ export const HostPanel: React.FC = () => {
       setEndConfirming(false);
       setGameEnded(true);
       refetch();
-    } catch (err) {
+    } catch {
       toast.error('Erro ao encerrar o jogo');
     }
-  };
+  }, [game, hostToken, refetch, t]);
 
   const handleDraw = useCallback(async () => {
     if (!game || !hostToken) return;
@@ -223,7 +212,7 @@ export const HostPanel: React.FC = () => {
     });
   }, [game, hostToken, setState_draw]);
 
-  // Improvement 5: handleVerifyBingo with winner tracking
+  // Feature 3: verify bingo with winType + canClaimAgain for multi-prize
   const handleVerifyBingo = async (gpId: string, isValid: boolean, winnerType?: Winner['type']) => {
     if (!game || !hostToken) return;
     try {
@@ -233,35 +222,53 @@ export const HostPanel: React.FC = () => {
         gp_id: gpId,
         is_valid: isValid,
       });
-      await broadcastToGame(game.code, 'verify', {
-        gamePlerId: gpId,
-        verified: isValid,
-      });
-      toast.success(isValid ? 'Bingo aprovado!' : 'Bingo rejeitado');
-      setState_playerVerified(gpId, isValid);
 
-      // Track winners
+      const gamePrizeTypes = game.mode.filter((m): m is PrizeType => PRIZE_TYPES.includes(m as PrizeType));
+      const isMultiPrize = gamePrizeTypes.length > 1;
+
+      let canClaimAgain = false;
+      let updatedWinners = winners;
+
       if (isValid && winnerType) {
         const gp = players.find((p) => p.id === gpId);
         const nickname = gp?.players?.nickname ?? 'Anônimo';
         const newWinner: Winner = { playerId: gpId, nickname, type: winnerType };
-        const updatedWinners = [...winners, newWinner];
+        updatedWinners = [...winners, newWinner];
         setWinners(updatedWinners);
         await broadcastToGame(game.code, 'winner', { winners: updatedWinners });
 
-        // Auto-end only if cartela_cheia
+        if (isMultiPrize) {
+          const gpWonTypes = updatedWinners.filter((w) => w.playerId === gpId).map((w) => w.type);
+          canClaimAgain = gamePrizeTypes.some((t) => !gpWonTypes.includes(t as Winner['type']));
+        }
+
         if (winnerType === 'cartela_cheia') {
           handleEndGame();
         }
       }
-    } catch (err) {
+
+      await broadcastToGame(game.code, 'verify', {
+        gamePlerId: gpId,
+        verified: isValid,
+        winType: winnerType,
+        canClaimAgain,
+      });
+
+      if (canClaimAgain) {
+        // Reset DB claim so player can claim again for the next type
+        await supabase
+          .from('game_players')
+          .update({ bingo_claimed: false, bingo_verified: null })
+          .eq('id', gpId);
+        setState_resetClaim(gpId);
+        toast.success('Bingo aprovado! Jogador pode reivindicar novamente.');
+      } else {
+        setState_playerVerified(gpId, isValid);
+        toast.success(isValid ? 'Bingo aprovado!' : 'Bingo rejeitado');
+      }
+    } catch {
       toast.error('Erro ao verificar bingo');
     }
-  };
-
-  // Improvement 6: Tie detection helper
-  const checkForTie = (gpId: string, winnerType: Winner['type']): Winner[] => {
-    return winners.filter((w) => w.type === winnerType);
   };
 
   // Tie-breaking: resolve with collected responses
@@ -307,7 +314,6 @@ export const HostPanel: React.FC = () => {
       startedAt,
       timeoutSeconds: 60,
     });
-    // Auto-resolve after 60s if not already resolved
     setTimeout(() => {
       if (!tieResolvedRef.current) {
         setTieVote((prev) => {
@@ -319,7 +325,7 @@ export const HostPanel: React.FC = () => {
     }, 60000);
   }, [game, resolveTieWithResponses]);
 
-  // Countdown display for tie vote
+  // Countdown for tie vote
   useEffect(() => {
     if (!tieVote) return;
     setTieCountdown(60);
@@ -332,7 +338,7 @@ export const HostPanel: React.FC = () => {
     return () => clearInterval(interval);
   }, [tieVote?.startedAt]);
 
-  // Listen for tie_response events from players
+  // Listen for tie_response events
   useEffect(() => {
     if (!code) return;
     const unsubscribe = subscribeToGame(code, (msg) => {
@@ -341,7 +347,6 @@ export const HostPanel: React.FC = () => {
         setTieVote((prev) => {
           if (!prev) return prev;
           const newResponses = { ...prev.responses, [payload.playerId]: payload.decision };
-          // Check if all tied players have voted
           if (prev.tiedPlayers.every((p) => newResponses[p.id])) {
             setTimeout(() => resolveTieWithResponses(prev.tiedPlayers, prev.winType, newResponses), 0);
           }
@@ -353,10 +358,72 @@ export const HostPanel: React.FC = () => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [code]);
 
-  // Find host's own game_player entry
+  // Feature 4: Invite same players to a new game
+  const handleInviteToNewGame = useCallback(async () => {
+    if (!game || !currentPlayer) return;
+    setInvitingNewGame(true);
+    try {
+      const newCode = await generateUniqueCode();
+      const newHostToken = crypto.randomUUID();
+      localStorage.setItem(`bingo_host_token_${newCode}`, newHostToken);
+
+      const { error } = await supabase.from('games').insert({
+        code: newCode,
+        host_token: newHostToken,
+        host_player_id: currentPlayer.id,
+        status: 'waiting',
+        mode: game.mode,
+        number_range_min: game.number_range_min,
+        number_range_max: game.number_range_max,
+        auto_draw_interval: game.auto_draw_interval,
+      });
+      if (error) throw error;
+
+      // Broadcast invite to all current players
+      await broadcastToGame(game.code, 'game_invite', { newGameCode: newCode });
+
+      toast.success('Convite enviado! Redirecionando para o novo jogo...');
+      setTimeout(() => navigate(`/host/${newCode}`), 1500);
+    } catch {
+      toast.error('Erro ao criar novo jogo');
+      setInvitingNewGame(false);
+    }
+  }, [game, currentPlayer, navigate]);
+
+  // Feature 1: Host BINGO button
   const myGamePlayer: GamePlayer | undefined = currentPlayer
     ? players.find((p) => p.player_id === currentPlayer.id)
     : undefined;
+
+  const handleHostClaimBingo = useCallback(async () => {
+    if (!game || !myGamePlayer || !hostCardRef.current) return;
+    const check = checkBingo(hostCardRef.current);
+    if (!check.hasPartialBingo && !check.hasFullBingo) {
+      toast.error('Você não tem bingo ainda!');
+      return;
+    }
+    try {
+      await supabase
+        .from('game_players')
+        .update({ bingo_claimed: true, bingo_claimed_at: new Date().toISOString() })
+        .eq('id', myGamePlayer.id);
+      await broadcastToGame(game.code, 'bingo', {
+        playerId: currentPlayer.id,
+        nickname: currentPlayer?.nickname,
+      });
+      toast.success('🎉 BINGO enviado! Aguardando verificação...');
+    } catch {
+      toast.error('Erro ao reivindicar bingo');
+    }
+  }, [game, myGamePlayer, currentPlayer]);
+
+  // Determine if host can still claim (multi-prize)
+  const gamePrizeTypes = game?.mode.filter((m): m is PrizeType => PRIZE_TYPES.includes(m as PrizeType)) ?? [];
+  const hostWonTypes = winners.filter((w) => w.playerId === myGamePlayer?.id).map((w) => w.type);
+  const hostCanClaim = myGamePlayer && hostCard &&
+    game?.status === 'running' &&
+    !myGamePlayer.bingo_claimed &&
+    gamePrizeTypes.some((t) => !hostWonTypes.includes(t as Winner['type']));
 
   if (loading) {
     return (
@@ -385,9 +452,8 @@ export const HostPanel: React.FC = () => {
     finished: '#e02020',
   };
 
-  // Improvement 5: Winner type label helper
   const winnerTypeLabel = (type: Winner['type']) => {
-    const labels: Record<Winner['type'], string> = {
+    const labels: Record<string, string> = {
       linha: t('host.winnerType_linha'),
       coluna: t('host.winnerType_coluna'),
       diagonal: t('host.winnerType_diagonal'),
@@ -413,8 +479,6 @@ export const HostPanel: React.FC = () => {
               {t('host.title')}
             </h1>
           </div>
-
-          {/* Status badge */}
           <div
             className="px-3 py-1 rounded-full text-sm font-bold"
             style={{
@@ -446,7 +510,7 @@ export const HostPanel: React.FC = () => {
           </div>
         </div>
 
-        {/* Game controls — Improvement 1: Inline confirmation */}
+        {/* Game controls */}
         <div className="flex gap-3 mb-6 items-center flex-wrap">
           {game.status === 'waiting' && (
             <button
@@ -488,28 +552,41 @@ export const HostPanel: React.FC = () => {
             </div>
           )}
 
-          {/* Improvement 5: Continue/End after partial win */}
           {game.status === 'running' && !gameEnded && winners.length > 0 && !endConfirming && (
             <button
               className="btn-secondary py-3 px-4"
-              onClick={() => {/* already drawing, just UI indicator */}}
               style={{ opacity: 0.7, cursor: 'default' }}
             >
               {t('host.continueGame')}
             </button>
           )}
 
+          {/* Feature 4: Post-game actions */}
           {(game.status === 'finished' || gameEnded) && (
-            <button
-              className="btn-primary flex-1 py-3"
-              onClick={() => navigate('/create')}
-            >
-              {t('host.newGame')}
-            </button>
+            <div className="flex gap-2 flex-wrap flex-1">
+              <button
+                className="btn-primary flex-1 py-3"
+                onClick={() => navigate('/create')}
+              >
+                {t('host.newGame')}
+              </button>
+              <button
+                className="flex-1 py-3 rounded-2xl font-bold text-sm"
+                style={{
+                  background: invitingNewGame ? 'rgba(255,255,255,0.1)' : 'rgba(255,204,0,0.15)',
+                  color: 'var(--gold)',
+                  border: '1px solid var(--gold)',
+                }}
+                onClick={handleInviteToNewGame}
+                disabled={invitingNewGame}
+              >
+                {invitingNewGame ? 'Criando...' : '📨 Convidar mesmas pessoas'}
+              </button>
+            </div>
           )}
         </div>
 
-        {/* Improvement 5: Winners banner */}
+        {/* Winners banner */}
         {winners.length > 0 && (
           <div className="glass-card p-4 mb-4">
             <h2 className="text-white/70 text-sm font-semibold mb-2 uppercase tracking-wide">
@@ -532,16 +609,11 @@ export const HostPanel: React.FC = () => {
         <div className="grid md:grid-cols-2 gap-4">
           {/* Left column */}
           <div className="space-y-4">
-            {/* Improvement 2: Sorteio section with LastDrawnDisplay + NumberBoard */}
             <div>
               <h2 className="text-white/70 text-sm font-semibold mb-2 uppercase tracking-wide">
                 Sorteio
               </h2>
-
-              {/* Last drawn — big & animated */}
               <LastDrawnDisplay lastDrawn={lastDrawn} t={t} />
-
-              {/* Draw action panel */}
               <DrawPanel
                 lastDrawn={lastDrawn}
                 drawnNumbers={game.drawn_numbers}
@@ -549,8 +621,6 @@ export const HostPanel: React.FC = () => {
                 autoInterval={game.auto_draw_interval}
                 gameRunning={game.status === 'running'}
               />
-
-              {/* NumberBoard — same as players */}
               {game.drawn_numbers.length > 0 && (
                 <div className="glass-card p-4 mt-3">
                   <div className="text-xs text-white/50 mb-2 uppercase tracking-wide">
@@ -568,10 +638,7 @@ export const HostPanel: React.FC = () => {
 
             {/* Tie vote panel */}
             {tieVote && (
-              <div
-                className="glass-card p-4 mb-0"
-                style={{ border: '2px solid #f97316' }}
-              >
+              <div className="glass-card p-4 mb-0" style={{ border: '2px solid #f97316' }}>
                 <h2 className="text-sm font-bold mb-2" style={{ color: '#f97316' }}>
                   ⚖️ Votação de Empate
                 </h2>
@@ -607,10 +674,7 @@ export const HostPanel: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-2 text-xs text-white/60">
                   <span>⏱️</span>
-                  <div
-                    className="flex-1 rounded-full h-2"
-                    style={{ background: 'rgba(255,255,255,0.1)' }}
-                  >
+                  <div className="flex-1 rounded-full h-2" style={{ background: 'rgba(255,255,255,0.1)' }}>
                     <div
                       className="h-2 rounded-full transition-all"
                       style={{
@@ -655,7 +719,7 @@ export const HostPanel: React.FC = () => {
               />
             </div>
 
-            {/* Host's own card — fully interactive when game is running */}
+            {/* Host's own card — Feature 1: with BINGO button */}
             {myGamePlayer && hostCard && (
               <div className="glass-card p-4">
                 <h2 className="text-white/70 text-sm font-semibold mb-3 uppercase tracking-wide">
@@ -666,6 +730,51 @@ export const HostPanel: React.FC = () => {
                   onCellClick={handleHostCellClick}
                   size="sm"
                 />
+
+                {/* Feature 1: BINGO button for host-as-player */}
+                <div className="mt-3">
+                  {/* Show won types */}
+                  {hostWonTypes.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mb-2">
+                      {hostWonTypes.map((ht) => (
+                        <span
+                          key={ht}
+                          className="text-xs px-2 py-1 rounded-lg font-semibold"
+                          style={{ background: 'rgba(26,171,90,0.2)', color: 'var(--green)' }}
+                        >
+                          ✅ {winnerTypeLabel(ht as Winner['type'])}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  {myGamePlayer.bingo_claimed && myGamePlayer.bingo_verified === null && (
+                    <div
+                      className="w-full py-2 rounded-xl text-center text-sm font-bold"
+                      style={{ background: 'rgba(255,204,0,0.2)', color: 'var(--gold)' }}
+                    >
+                      {t('game.bingoSent')}
+                    </div>
+                  )}
+
+                  {myGamePlayer.bingo_claimed && myGamePlayer.bingo_verified === true && !hostCanClaim && (
+                    <div
+                      className="w-full py-2 rounded-xl text-center text-sm font-bold"
+                      style={{ background: 'rgba(26,171,90,0.2)', color: 'var(--green)' }}
+                    >
+                      {t('game.bingoVerified')}
+                    </div>
+                  )}
+
+                  {hostCanClaim && (
+                    <button
+                      className="btn-primary w-full py-2 text-lg rounded-xl"
+                      onClick={handleHostClaimBingo}
+                    >
+                      {t('game.claimBingo')}
+                    </button>
+                  )}
+                </div>
               </div>
             )}
           </div>

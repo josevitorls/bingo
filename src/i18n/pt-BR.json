@@ -136,6 +136,7 @@
     "loginOptional": "Entrar com conta (opcional)",
     "submit": "Entrar",
     "joining": "Entrando...",
+    "gameInProgress": "Jogo em andamento — você entrará como participante automático",
     "errors": {
       "codeRequired": "Código é obrigatório",
       "codeLength": "Código deve ter 4 caracteres",

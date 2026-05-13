@@ -5,11 +5,14 @@ import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { subscribeToGame, broadcastToGame } from '../lib/realtime';
 import { checkBingo } from '../lib/bingoChecker';
+import { generateCard, hashCard } from '../lib/cardGenerator';
 import { BingoCard } from '../components/BingoCard';
 import { NumberBoard } from '../components/NumberBoard';
 import type { BingoCardData, Game, GamePlayer, Winner, TieVotePayload } from '../types';
 
 const DEBOUNCE_MS = 500;
+const PRIZE_TYPES = ['linha', 'coluna', 'diagonal', 'cartela_cheia'] as const;
+type PrizeType = typeof PRIZE_TYPES[number];
 
 // Isolated panel — only re-renders when drawnNumbers changes
 const DrawnNumbersPanel = React.memo(({
@@ -92,7 +95,10 @@ export const PlayerGame: React.FC = () => {
   const [bingoClaimed, setBingoClaimed] = useState(false);
   const [bingoVerified, setBingoVerified] = useState<boolean | null>(null);
 
-  // Improvement 5: Winners list from realtime
+  // Multi-prize: track which types this player has already claimed
+  const [claimedTypes, setClaimedTypes] = useState<string[]>([]);
+
+  // Winners list from realtime
   const [winners, setWinners] = useState<Winner[]>([]);
 
   // Tie-breaking vote state
@@ -100,6 +106,11 @@ export const PlayerGame: React.FC = () => {
   const [myTieVote, setMyTieVote] = useState<'accept' | 'reject' | null>(null);
   const [tieCountdown, setTieCountdown] = useState(60);
   const [tieVoteResult, setTieVoteResult] = useState<'accept' | 'reject' | null>(null);
+
+  // Post-game invite modal
+  const [gameInvite, setGameInvite] = useState<{ newGameCode: string } | null>(null);
+  const [inviteCountdown, setInviteCountdown] = useState(60);
+  const [joiningInvite, setJoiningInvite] = useState(false);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cardRef = useRef<BingoCardData | null>(null);
@@ -143,11 +154,29 @@ export const PlayerGame: React.FC = () => {
 
     if (gpData) {
       const gp = gpData as GamePlayer;
-      setCard(gp.card);
+      gpIdRef.current = gp.id;
+
+      // Feature 5: auto-mark card with all drawn numbers on load (mid-game join or reconnect)
+      let cardToUse = gp.card;
+      if ((gameData as Game).mode.includes('auto_mark') && drawn.length > 0) {
+        const newMarked = gp.card.numbers.map((row, ri) =>
+          row.map((num, ci) => {
+            if (ri === 2 && ci === 2) return true;
+            if (gp.card.marked[ri][ci]) return true;
+            return drawn.includes(num);
+          })
+        );
+        const changed = newMarked.some((row, ri) => row.some((val, ci) => val !== gp.card.marked[ri][ci]));
+        if (changed) {
+          cardToUse = { ...gp.card, marked: newMarked };
+          supabase.from('game_players').update({ card: cardToUse }).eq('id', gp.id);
+        }
+      }
+
+      setCard(cardToUse);
+      cardRef.current = cardToUse;
       setBingoClaimed(gp.bingo_claimed);
       setBingoVerified(gp.bingo_verified ?? null);
-      cardRef.current = gp.card;
-      gpIdRef.current = gp.id;
     }
 
     setLoading(false);
@@ -161,14 +190,14 @@ export const PlayerGame: React.FC = () => {
     await supabase.from('game_players').update({ card: updatedCard }).eq('id', gpIdRef.current);
   }, []);
 
-  // Improvement 3: Auto-mark helper
+  // Auto-mark helper
   const autoMarkCard = useCallback((drawn: number[]) => {
     const current = cardRef.current;
     if (!current) return;
     const newMarked = current.numbers.map((row, ri) =>
       row.map((num, ci) => {
-        if (ri === 2 && ci === 2) return true; // FREE
-        if (current.marked[ri][ci]) return true; // already marked
+        if (ri === 2 && ci === 2) return true;
+        if (current.marked[ri][ci]) return true;
         return drawn.includes(num);
       })
     );
@@ -177,7 +206,6 @@ export const PlayerGame: React.FC = () => {
     const newCard: BingoCardData = { ...current, marked: newMarked };
     setCard(newCard);
     cardRef.current = newCard;
-    // Persist immediately (no debounce for auto-mark)
     persistCard(newCard);
   }, [persistCard]);
 
@@ -190,7 +218,6 @@ export const PlayerGame: React.FC = () => {
         setDrawnNumbers(payload.drawnNumbers);
         toast(`🎱 ${payload.number}`, { duration: 2000 });
 
-        // Improvement 3: Auto-mark if game mode includes auto_mark
         if (gameModeRef.current.includes('auto_mark')) {
           autoMarkCard(payload.drawnNumbers);
         }
@@ -200,18 +227,34 @@ export const PlayerGame: React.FC = () => {
         if (payload.status === 'running') toast.success(t('notification.gameStarted'));
         else if (payload.status === 'finished') toast(t('notification.gameEnded'));
       } else if (msg.type === 'verify') {
-        const payload = msg.payload as { gamePlerId: string; verified: boolean };
+        const payload = msg.payload as {
+          gamePlerId: string;
+          verified: boolean;
+          winType?: string;
+          canClaimAgain?: boolean;
+        };
         if (payload.gamePlerId === gpIdRef.current) {
-          setBingoVerified(payload.verified);
-          if (payload.verified) toast.success(t('game.bingoVerified'));
-          else toast.error(t('game.bingoRejected'));
+          if (payload.verified && payload.winType) {
+            setClaimedTypes((prev) => [...prev, payload.winType!]);
+          }
+          if (payload.canClaimAgain) {
+            // Brief positive feedback then reset to allow next claim
+            setBingoVerified(true);
+            setTimeout(() => {
+              setBingoClaimed(false);
+              setBingoVerified(null);
+            }, 2000);
+            toast.success(t('game.bingoVerified'));
+          } else {
+            setBingoVerified(payload.verified);
+            if (payload.verified) toast.success(t('game.bingoVerified'));
+            else toast.error(t('game.bingoRejected'));
+          }
         }
       } else if (msg.type === 'winner') {
-        // Improvement 5: Receive winners update
         const payload = msg.payload as { winners: Winner[] };
         setWinners(payload.winners ?? []);
       } else if (msg.type === 'tie_decision') {
-        // Improvement 6: Host decided on tie
         toast(t('game.tieDecision'), { duration: 4000 });
       } else if (msg.type === 'tie_vote') {
         const payload = msg.payload as TieVotePayload;
@@ -222,12 +265,16 @@ export const PlayerGame: React.FC = () => {
           setTieVoteResult(null);
           setTieCountdown(60);
         }
+      } else if (msg.type === 'game_invite') {
+        const payload = msg.payload as { newGameCode: string };
+        setGameInvite(payload);
+        setInviteCountdown(60);
       }
     });
     return unsubscribe;
-  }, [code, t, autoMarkCard]);
+  }, [code, t, autoMarkCard, currentPlayer]);
 
-  // Keep gameModeRef in sync when game changes
+  // Keep gameModeRef in sync
   useEffect(() => {
     if (game) gameModeRef.current = game.mode;
   }, [game?.mode]);
@@ -239,7 +286,7 @@ export const PlayerGame: React.FC = () => {
       setTieCountdown((prev) => {
         if (prev <= 1) {
           clearInterval(interval);
-          setTieVoteModal(null); // timeout = silence = loss
+          setTieVoteModal(null);
           return 0;
         }
         return prev - 1;
@@ -248,7 +295,22 @@ export const PlayerGame: React.FC = () => {
     return () => clearInterval(interval);
   }, [tieVoteModal]);
 
-  // Handle player's tie vote decision
+  // Invite countdown
+  useEffect(() => {
+    if (!gameInvite) return;
+    const interval = setInterval(() => {
+      setInviteCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          setGameInvite(null);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [gameInvite]);
+
   const handleTieVote = useCallback(async (decision: 'accept' | 'reject') => {
     if (!game || !currentPlayer || !tieVoteModal) return;
     setMyTieVote(decision);
@@ -257,26 +319,79 @@ export const PlayerGame: React.FC = () => {
       playerId: currentPlayer.id,
       decision,
     });
-    // Close modal after short delay so the result feedback is visible
     setTimeout(() => {
       setTieVoteModal(null);
-      // Clear result feedback after another moment
       setTimeout(() => setTieVoteResult(null), 2000);
     }, 1800);
   }, [game, currentPlayer, tieVoteModal]);
 
-  // Improvement 4: Traditional mode = no auto_mark AND no cartela_cheia
+  // Accept post-game invite — auto-join new game
+  const handleAcceptInvite = useCallback(async () => {
+    if (!gameInvite || !currentPlayer) return;
+    const newCode = gameInvite.newGameCode;
+    setJoiningInvite(true);
+    try {
+      const { data: newGame } = await supabase
+        .from('games')
+        .select('*')
+        .eq('code', newCode)
+        .maybeSingle();
+
+      if (!newGame) {
+        navigate(`/join?code=${newCode}`);
+        return;
+      }
+
+      // Check if already joined
+      const { data: existing } = await supabase
+        .from('game_players')
+        .select('id')
+        .eq('game_id', newGame.id)
+        .eq('player_id', currentPlayer.id)
+        .maybeSingle();
+
+      if (existing) {
+        navigate(`/game/${newCode}`);
+        return;
+      }
+
+      const card = generateCard(newGame.number_range_min, newGame.number_range_max);
+      const cardHash = await hashCard(card);
+
+      await supabase.from('game_players').insert({
+        game_id: newGame.id,
+        player_id: currentPlayer.id,
+        card,
+      });
+      await supabase.from('card_history').insert({
+        player_id: currentPlayer.id,
+        card_hash: cardHash,
+        game_id: newGame.id,
+      });
+      await broadcastToGame(newCode, 'players', {
+        type: 'joined',
+        playerId: currentPlayer.id,
+        nickname: currentPlayer.nickname,
+      });
+      toast.success('Entrou no novo jogo!');
+      navigate(`/game/${newCode}`);
+    } catch {
+      toast.error('Erro ao entrar no jogo');
+      navigate(`/join?code=${newCode}`);
+    } finally {
+      setJoiningInvite(false);
+    }
+  }, [gameInvite, currentPlayer, navigate]);
+
   const isTraditionalMode = game
     ? !game.mode.includes('auto_mark') && !game.mode.includes('cartela_cheia')
     : true;
 
-  // Cell click — always allowed; warns only in non-traditional mode
   const handleCellClick = useCallback((row: number, col: number, number: number) => {
     const currentCard = cardRef.current;
     if (!currentCard) return;
     if (row === 2 && col === 2) return;
 
-    // Improvement 4: only warn in non-traditional mode
     if (!isTraditionalMode && number !== 0 && !drawnRef.current.includes(number)) {
       toast(t('game.cellNotDrawn'), { icon: '⚠️' });
     }
@@ -334,16 +449,14 @@ export const PlayerGame: React.FC = () => {
 
   const lastDrawn = drawnNumbers.length > 0 ? drawnNumbers[drawnNumbers.length - 1] : null;
 
-  // Winner type labels
   const winnerTypeLabel = (type: Winner['type']) => {
-    const map: Record<Winner['type'], string> = {
+    const map: Record<string, string> = {
       linha: 'Linha', coluna: 'Coluna', diagonal: 'Diagonal',
       cartela_cheia: 'Cartela Cheia', empate: 'Empate',
     };
     return map[type] ?? type;
   };
 
-  // Build other player names for the tie modal
   const tieOtherNames = tieVoteModal
     ? tieVoteModal.tiedPlayers
         .filter((p) => p.id !== currentPlayer?.id)
@@ -351,11 +464,78 @@ export const PlayerGame: React.FC = () => {
         .join(', ')
     : '';
 
+  // Multi-prize: determine which types are claimable
+  const gamePrizeTypes = game.mode.filter((m): m is PrizeType => PRIZE_TYPES.includes(m as PrizeType));
+  const hasUnclaimedTypes = gamePrizeTypes.some((t) => !claimedTypes.includes(t));
+  const showBingoButton = !bingoClaimed && hasUnclaimedTypes;
+
   return (
     <div className="min-h-screen px-4 py-6">
       <div className="max-w-4xl mx-auto">
 
-      {/* Tie Vote Modal — full-screen overlay */}
+      {/* Post-game invite modal */}
+      {gameInvite && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: 'rgba(26,26,46,0.92)' }}
+        >
+          <div
+            className="w-full max-w-sm mx-4 rounded-3xl p-6 text-center"
+            style={{
+              background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+              border: '2px solid var(--gold)',
+              boxShadow: '0 0 40px rgba(255,204,0,0.3)',
+            }}
+          >
+            <div className="text-5xl mb-3">🎮</div>
+            <h2 className="font-title text-3xl mb-1" style={{ color: 'var(--gold)' }}>
+              Novo Jogo!
+            </h2>
+            <p className="text-white/70 text-sm mb-4">
+              O host está convidando você para um novo jogo
+            </p>
+            <div className="mb-5">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                <span className="text-lg">⏱️</span>
+                <span className="font-bold text-xl" style={{ color: 'var(--gold)' }}>
+                  {inviteCountdown} segundos
+                </span>
+              </div>
+              <div className="w-full rounded-full h-2" style={{ background: 'rgba(255,255,255,0.15)' }}>
+                <div
+                  className="h-2 rounded-full transition-all duration-1000"
+                  style={{
+                    width: `${(inviteCountdown / 60) * 100}%`,
+                    background: inviteCountdown > 20 ? 'var(--gold)' : 'var(--red)',
+                  }}
+                />
+              </div>
+            </div>
+            <div className="flex gap-3">
+              <button
+                className="flex-1 py-3 rounded-2xl font-bold text-base"
+                style={{ background: 'var(--green)', color: 'white' }}
+                onClick={handleAcceptInvite}
+                disabled={joiningInvite}
+              >
+                {joiningInvite ? '...' : '✅ ACEITAR'}
+              </button>
+              <button
+                className="flex-1 py-3 rounded-2xl font-bold text-base"
+                style={{ background: 'rgba(255,255,255,0.15)', color: 'white' }}
+                onClick={() => { setGameInvite(null); navigate('/'); }}
+              >
+                ❌ RECUSAR
+              </button>
+            </div>
+            <p className="text-xs text-white/40 mt-3">
+              Silêncio = recusar · você pode entrar pelo código depois
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Tie Vote Modal */}
       {tieVoteModal && myTieVote === null && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center"
@@ -377,8 +557,6 @@ export const PlayerGame: React.FC = () => {
               Você empatou com <span className="font-bold text-white">{tieOtherNames}</span>
             </p>
             <p className="text-white/60 text-sm mb-4">Deseja aceitar o empate?</p>
-
-            {/* Countdown */}
             <div className="mb-5">
               <div className="flex items-center justify-center gap-2 mb-2">
                 <span className="text-lg">⏱️</span>
@@ -386,10 +564,7 @@ export const PlayerGame: React.FC = () => {
                   {tieCountdown} segundos
                 </span>
               </div>
-              <div
-                className="w-full rounded-full h-2"
-                style={{ background: 'rgba(255,255,255,0.15)' }}
-              >
+              <div className="w-full rounded-full h-2" style={{ background: 'rgba(255,255,255,0.15)' }}>
                 <div
                   className="h-2 rounded-full transition-all duration-1000"
                   style={{
@@ -399,8 +574,6 @@ export const PlayerGame: React.FC = () => {
                 />
               </div>
             </div>
-
-            {/* Action buttons */}
             <div className="flex gap-3">
               <button
                 className="flex-1 py-3 rounded-2xl font-bold text-base"
@@ -417,7 +590,6 @@ export const PlayerGame: React.FC = () => {
                 ❌ RECUSAR
               </button>
             </div>
-
             <p className="text-xs text-white/40 mt-3">
               Aceitar = compartilhar prêmio &nbsp;·&nbsp; Recusar/silêncio = perder
             </p>
@@ -442,16 +614,25 @@ export const PlayerGame: React.FC = () => {
           </div>
         </div>
       )}
-        {/* Header */}
+
+        {/* Header — Feature 2: show player name */}
         <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <h1 className="font-title text-3xl sm:text-4xl" style={{ color: 'var(--gold)' }}>
               {t('game.title')}
             </h1>
             <span className="text-white/50 font-mono text-lg tracking-widest">{game.code}</span>
+            {currentPlayer?.nickname && (
+              <span
+                className="text-xs px-2 py-1 rounded-full font-semibold"
+                style={{ background: 'rgba(255,204,0,0.15)', color: 'var(--gold)' }}
+              >
+                👤 {currentPlayer.nickname}
+              </span>
+            )}
           </div>
           <div
-            className="text-xs px-2 py-1 rounded-full font-bold"
+            className="text-xs px-2 py-1 rounded-full font-bold shrink-0"
             style={{
               background: game.status === 'running' ? 'rgba(26,171,90,0.2)' : game.status === 'finished' ? 'rgba(224,32,32,0.2)' : 'rgba(255,204,0,0.2)',
               color: game.status === 'running' ? '#1aab5a' : game.status === 'finished' ? '#e02020' : '#FFCC00',
@@ -463,7 +644,7 @@ export const PlayerGame: React.FC = () => {
           </div>
         </div>
 
-        {/* Improvement 5: Winners banner — non-blocking list at top */}
+        {/* Winners banner */}
         {winners.length > 0 && (
           <div
             className="glass-card p-3 mb-4"
@@ -486,7 +667,6 @@ export const PlayerGame: React.FC = () => {
           </div>
         )}
 
-        {/* Last drawn — isolated component, no flash to rest of page */}
         <LastDrawnDisplay lastDrawn={lastDrawn} t={t} />
 
         {game.status === 'finished' && (
@@ -499,7 +679,7 @@ export const PlayerGame: React.FC = () => {
         )}
 
         <div className="grid md:grid-cols-2 gap-4 items-start">
-          {/* Left: Bingo Card — only re-renders when card.marked changes */}
+          {/* Left: Bingo Card */}
           <div>
             <h2 className="text-white/70 text-sm font-semibold mb-2 uppercase tracking-wide">
               {t('game.myCard')}
@@ -512,6 +692,21 @@ export const PlayerGame: React.FC = () => {
 
             {game.status === 'running' && (
               <div className="mt-3">
+                {/* Feature 3: multi-prize already-won badges */}
+                {claimedTypes.length > 0 && (
+                  <div className="flex flex-wrap gap-1 mb-2">
+                    {claimedTypes.map((ct) => (
+                      <span
+                        key={ct}
+                        className="text-xs px-2 py-1 rounded-lg font-semibold"
+                        style={{ background: 'rgba(26,171,90,0.2)', color: 'var(--green)' }}
+                      >
+                        ✅ {winnerTypeLabel(ct as Winner['type'])}
+                      </span>
+                    ))}
+                  </div>
+                )}
+
                 {bingoClaimed ? (
                   <div
                     className="w-full py-3 rounded-xl text-center font-bold text-lg"
@@ -522,16 +717,16 @@ export const PlayerGame: React.FC = () => {
                   >
                     {bingoVerified === true ? t('game.bingoVerified') : bingoVerified === false ? t('game.bingoRejected') : t('game.bingoSent')}
                   </div>
-                ) : (
+                ) : showBingoButton ? (
                   <button className="btn-primary w-full py-3 text-xl rounded-xl" onClick={handleClaimBingo}>
                     {t('game.claimBingo')}
                   </button>
-                )}
+                ) : null}
               </div>
             )}
           </div>
 
-          {/* Right: Drawn numbers — isolated component */}
+          {/* Right: Drawn numbers */}
           <DrawnNumbersPanel
             drawnNumbers={drawnNumbers}
             rangeMin={game.number_range_min}
