@@ -7,7 +7,7 @@ import { subscribeToGame, broadcastToGame } from '../lib/realtime';
 import { checkBingo } from '../lib/bingoChecker';
 import { BingoCard } from '../components/BingoCard';
 import { NumberBoard } from '../components/NumberBoard';
-import type { BingoCardData, Game, GamePlayer } from '../types';
+import type { BingoCardData, Game, GamePlayer, Winner } from '../types';
 
 const DEBOUNCE_MS = 500;
 
@@ -92,10 +92,14 @@ export const PlayerGame: React.FC = () => {
   const [bingoClaimed, setBingoClaimed] = useState(false);
   const [bingoVerified, setBingoVerified] = useState<boolean | null>(null);
 
+  // Improvement 5: Winners list from realtime
+  const [winners, setWinners] = useState<Winner[]>([]);
+
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cardRef = useRef<BingoCardData | null>(null);
   const gpIdRef = useRef<string | null>(null);
   const drawnRef = useRef<number[]>([]);
+  const gameModeRef = useRef<string[]>([]);
 
   const currentPlayer = useMemo(() => {
     const s = localStorage.getItem('bingo_player');
@@ -129,6 +133,7 @@ export const PlayerGame: React.FC = () => {
     setGame(gameData as Game);
     setDrawnNumbers(drawn);
     drawnRef.current = drawn;
+    gameModeRef.current = (gameData as Game).mode ?? [];
 
     if (gpData) {
       const gp = gpData as GamePlayer;
@@ -144,6 +149,32 @@ export const PlayerGame: React.FC = () => {
 
   useEffect(() => { fetchData(); }, [fetchData]);
 
+  // Persist card helper
+  const persistCard = useCallback(async (updatedCard: BingoCardData) => {
+    if (!gpIdRef.current) return;
+    await supabase.from('game_players').update({ card: updatedCard }).eq('id', gpIdRef.current);
+  }, []);
+
+  // Improvement 3: Auto-mark helper
+  const autoMarkCard = useCallback((drawn: number[]) => {
+    const current = cardRef.current;
+    if (!current) return;
+    const newMarked = current.numbers.map((row, ri) =>
+      row.map((num, ci) => {
+        if (ri === 2 && ci === 2) return true; // FREE
+        if (current.marked[ri][ci]) return true; // already marked
+        return drawn.includes(num);
+      })
+    );
+    const changed = newMarked.some((row, ri) => row.some((val, ci) => val !== current.marked[ri][ci]));
+    if (!changed) return;
+    const newCard: BingoCardData = { ...current, marked: newMarked };
+    setCard(newCard);
+    cardRef.current = newCard;
+    // Persist immediately (no debounce for auto-mark)
+    persistCard(newCard);
+  }, [persistCard]);
+
   useEffect(() => {
     if (!code) return;
     const unsubscribe = subscribeToGame(code, (msg) => {
@@ -152,6 +183,11 @@ export const PlayerGame: React.FC = () => {
         drawnRef.current = payload.drawnNumbers;
         setDrawnNumbers(payload.drawnNumbers);
         toast(`🎱 ${payload.number}`, { duration: 2000 });
+
+        // Improvement 3: Auto-mark if game mode includes auto_mark
+        if (gameModeRef.current.includes('auto_mark')) {
+          autoMarkCard(payload.drawnNumbers);
+        }
       } else if (msg.type === 'status') {
         const payload = msg.payload as { status: Game['status'] };
         setGame((g) => g ? { ...g, status: payload.status } : g);
@@ -164,23 +200,36 @@ export const PlayerGame: React.FC = () => {
           if (payload.verified) toast.success(t('game.bingoVerified'));
           else toast.error(t('game.bingoRejected'));
         }
+      } else if (msg.type === 'winner') {
+        // Improvement 5: Receive winners update
+        const payload = msg.payload as { winners: Winner[] };
+        setWinners(payload.winners ?? []);
+      } else if (msg.type === 'tie_decision') {
+        // Improvement 6: Host decided on tie
+        toast(t('game.tieDecision'), { duration: 4000 });
       }
     });
     return unsubscribe;
-  }, [code, t]);
+  }, [code, t, autoMarkCard]);
 
-  const persistCard = useCallback(async (updatedCard: BingoCardData) => {
-    if (!gpIdRef.current) return;
-    await supabase.from('game_players').update({ card: updatedCard }).eq('id', gpIdRef.current);
-  }, []);
+  // Keep gameModeRef in sync when game changes
+  useEffect(() => {
+    if (game) gameModeRef.current = game.mode;
+  }, [game?.mode]);
 
-  // Cell click — always allowed; warns if number not yet drawn
+  // Improvement 4: Traditional mode = no auto_mark AND no cartela_cheia
+  const isTraditionalMode = game
+    ? !game.mode.includes('auto_mark') && !game.mode.includes('cartela_cheia')
+    : true;
+
+  // Cell click — always allowed; warns only in non-traditional mode
   const handleCellClick = useCallback((row: number, col: number, number: number) => {
     const currentCard = cardRef.current;
     if (!currentCard) return;
     if (row === 2 && col === 2) return;
 
-    if (number !== 0 && !drawnRef.current.includes(number)) {
+    // Improvement 4: only warn in non-traditional mode
+    if (!isTraditionalMode && number !== 0 && !drawnRef.current.includes(number)) {
       toast(t('game.cellNotDrawn'), { icon: '⚠️' });
     }
 
@@ -193,7 +242,7 @@ export const PlayerGame: React.FC = () => {
 
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => persistCard(newCard), DEBOUNCE_MS);
-  }, [persistCard, t]);
+  }, [persistCard, t, isTraditionalMode]);
 
   const handleClaimBingo = useCallback(async () => {
     if (!game || bingoClaimed || !cardRef.current) return;
@@ -237,6 +286,15 @@ export const PlayerGame: React.FC = () => {
 
   const lastDrawn = drawnNumbers.length > 0 ? drawnNumbers[drawnNumbers.length - 1] : null;
 
+  // Winner type labels
+  const winnerTypeLabel = (type: Winner['type']) => {
+    const map: Record<Winner['type'], string> = {
+      linha: 'Linha', coluna: 'Coluna', diagonal: 'Diagonal',
+      cartela_cheia: 'Cartela Cheia', empate: 'Empate',
+    };
+    return map[type] ?? type;
+  };
+
   return (
     <div className="min-h-screen px-4 py-6">
       <div className="max-w-4xl mx-auto">
@@ -260,6 +318,29 @@ export const PlayerGame: React.FC = () => {
             {game.status === 'finished' && '🏁 Finalizado'}
           </div>
         </div>
+
+        {/* Improvement 5: Winners banner — non-blocking list at top */}
+        {winners.length > 0 && (
+          <div
+            className="glass-card p-3 mb-4"
+            style={{ borderLeft: '3px solid var(--gold)' }}
+          >
+            <div className="text-sm font-bold mb-1" style={{ color: 'var(--gold)' }}>
+              🏆 {t('game.winnersTitle')}
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {winners.map((w, i) => (
+                <span
+                  key={i}
+                  className="text-xs px-2 py-1 rounded-lg font-semibold"
+                  style={{ background: 'rgba(255,204,0,0.15)', color: 'var(--gold)' }}
+                >
+                  {w.nickname} — {winnerTypeLabel(w.type)}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
 
         {/* Last drawn — isolated component, no flash to rest of page */}
         <LastDrawnDisplay lastDrawn={lastDrawn} t={t} />

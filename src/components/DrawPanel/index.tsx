@@ -10,7 +10,6 @@ interface DrawPanelProps {
 }
 
 export const DrawPanel: React.FC<DrawPanelProps> = ({
-  lastDrawn,
   drawnNumbers,
   onDraw,
   autoInterval,
@@ -77,24 +76,12 @@ export const DrawPanel: React.FC<DrawPanelProps> = ({
 
   return (
     <div className="glass-card p-4 sm:p-6">
-      {/* Last drawn number */}
-      <div className="text-center mb-4">
-        <div className="text-sm text-white/60 mb-1">{t('host.lastDrawn')}</div>
-        <div
-          className={`text-6xl sm:text-7xl font-title ${
-            lastDrawn ? 'animate-number-pop' : ''
-          }`}
-          style={{ color: 'var(--gold)' }}
-          key={lastDrawn}
-        >
-          {lastDrawn ?? '—'}
+      {/* Auto countdown indicator */}
+      {autoInterval && countdown !== null && gameRunning && (
+        <div className="text-center text-sm text-white/60 mb-3">
+          {t('host.nextIn')} {countdown}s
         </div>
-        {autoInterval && countdown !== null && gameRunning && (
-          <div className="text-sm text-white/60 mt-2">
-            {t('host.nextIn')} {countdown}s
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Draw button (manual mode) */}
       {!autoInterval && (
@@ -105,27 +92,6 @@ export const DrawPanel: React.FC<DrawPanelProps> = ({
         >
           {drawing ? t('host.drawing') : t('host.drawNumber')}
         </button>
-      )}
-
-      {/* Drawn history */}
-      {drawnNumbers.length > 0 && (
-        <div className="mt-4">
-          <div className="text-xs text-white/50 mb-2">{t('host.drawnHistory')}</div>
-          <div className="flex flex-wrap gap-1 max-h-24 overflow-y-auto">
-            {[...drawnNumbers].reverse().map((n, i) => (
-              <span
-                key={`${n}-${i}`}
-                className="px-2 py-0.5 rounded text-xs font-bold"
-                style={{
-                  background: i === 0 ? 'var(--gold)' : 'rgba(255,255,255,0.12)',
-                  color: i === 0 ? 'var(--dark)' : 'white',
-                }}
-              >
-                {n}
-              </span>
-            ))}
-          </div>
-        </div>
       )}
 
       {drawnNumbers.length === 0 && (
