@@ -15,7 +15,7 @@ export const HostPanel: React.FC = () => {
   const { code } = useParams<{ code: string }>();
   const navigate = useNavigate();
   const { t } = useTranslation();
-  const { game, players, loading, refetch } = useGame(code ?? null);
+  const { game, players, loading, refetch, setState_draw, setState_playerVerified } = useGame(code ?? null);
 
   const hostToken = code ? localStorage.getItem(`bingo_host_token_${code}`) : null;
   const storedPlayer = localStorage.getItem('bingo_player');
@@ -54,7 +54,7 @@ export const HostPanel: React.FC = () => {
       });
       await broadcastToGame(game.code, 'status', { status: 'running' });
       toast.success(t('host.gameStarted'));
-      refetch();
+      refetch(); // needed to update status locally since game obj came from useGame
     } catch (err) {
       toast.error('Erro ao iniciar o jogo');
     }
@@ -88,12 +88,13 @@ export const HostPanel: React.FC = () => {
       return;
     }
     const newDrawnNumbers = [...game.drawn_numbers, data as number];
+    // Update local state immediately — no refetch needed
+    setState_draw(newDrawnNumbers);
     await broadcastToGame(game.code, 'draw', {
       number: data,
       drawnNumbers: newDrawnNumbers,
     });
-    refetch();
-  }, [game, hostToken, refetch]);
+  }, [game, hostToken, setState_draw]);
 
   const handleVerifyBingo = async (gpId: string, isValid: boolean) => {
     if (!game || !hostToken) return;
@@ -109,7 +110,7 @@ export const HostPanel: React.FC = () => {
         verified: isValid,
       });
       toast.success(isValid ? 'Bingo aprovado!' : 'Bingo rejeitado');
-      refetch();
+      setState_playerVerified(gpId, isValid);
     } catch (err) {
       toast.error('Erro ao verificar bingo');
     }

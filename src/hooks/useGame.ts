@@ -116,11 +116,28 @@ export function useGame(code: string | null) {
     return unsubscribe;
   }, [code, fetchGame]);
 
+  const setState_draw = useCallback((drawnNumbers: number[]) => {
+    setState((s) =>
+      s.game ? { ...s, game: { ...s.game, drawn_numbers: drawnNumbers } } : s
+    );
+  }, []);
+
+  const setState_playerVerified = useCallback((gpId: string, verified: boolean) => {
+    setState((s) => ({
+      ...s,
+      players: s.players.map((p) =>
+        p.id === gpId ? { ...p, bingo_verified: verified } : p
+      ),
+    }));
+  }, []);
+
   return {
     game: state.game,
     players: state.players,
     loading: state.loading,
     error: state.error,
     refetch: fetchGame,
+    setState_draw,
+    setState_playerVerified,
   };
 }
