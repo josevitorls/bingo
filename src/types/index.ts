@@ -6,7 +6,16 @@ export type GameMode =
   | 'diagonal'
   | 'cartela_cheia'
   | 'primeiro'
-  | 'ultimo';
+  | 'ultimo'
+  | 'auto_mark'
+  | 'primeiro_a_acertar'
+  | 'ultimo_a_acertar';
+
+export interface Winner {
+  playerId: string;
+  nickname: string;
+  type: 'linha' | 'coluna' | 'diagonal' | 'cartela_cheia' | 'empate';
+}
 
 export interface Player {
   id: string;
@@ -63,4 +72,16 @@ export interface BingoCheck {
   completedCols: number[];
   completedDiagonals: ('main' | 'anti')[];
   isFullCard: boolean;
+}
+
+export interface TieVotePayload {
+  tiedPlayers: { id: string; nickname: string }[];
+  winType: string;
+  startedAt: number; // Date.now()
+  timeoutSeconds: 60;
+}
+
+export interface TieResponsePayload {
+  playerId: string;
+  decision: 'accept' | 'reject';
 }

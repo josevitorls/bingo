@@ -9,6 +9,7 @@ interface BingoNotificationProps {
   hostToken: string;
   onVerify: (gpId: string, isValid: boolean, winnerType?: Winner['type']) => Promise<void>;
   winners?: Winner[];
+  onStartTieVote?: (tiedPlayers: { id: string; nickname: string }[], winType: string) => void;
 }
 
 type WinnerType = Winner['type'];
@@ -30,6 +31,7 @@ export const BingoNotification: React.FC<BingoNotificationProps> = ({
   players,
   onVerify,
   winners = [],
+  onStartTieVote,
 }) => {
   const { t } = useTranslation();
   const [pendingVerify, setPendingVerify] = useState<PendingVerify | null>(null);
@@ -48,17 +50,27 @@ export const BingoNotification: React.FC<BingoNotificationProps> = ({
 
   const handleApproveClick = (gp: GamePlayer) => {
     const selectedType = typeSelections[gp.id] ?? 'linha';
-    // Improvement 6: Tie detection — check if a winner of the same type already exists
+    // Tie detection — check if a winner of the same type already exists
     const existingForType = winners.filter((w) => w.type === selectedType);
     if (existingForType.length > 0) {
-      const tieNames = existingForType.map((w) => w.nickname);
       const currentNickname = gp.players?.nickname ?? 'Anônimo';
-      setPendingVerify({
-        gpId: gp.id,
-        selectedType,
-        hasTie: true,
-        tieNames: [...tieNames, currentNickname],
-      });
+      const currentPlayerId = gp.player_id;
+      if (onStartTieVote) {
+        // Build the full list of tied players: existing winners + this new claimant
+        const tiedPlayers = [
+          ...existingForType.map((w) => ({ id: w.playerId, nickname: w.nickname })),
+          { id: currentPlayerId, nickname: currentNickname },
+        ];
+        onStartTieVote(tiedPlayers, selectedType);
+      } else {
+        const tieNames = existingForType.map((w) => w.nickname);
+        setPendingVerify({
+          gpId: gp.id,
+          selectedType,
+          hasTie: true,
+          tieNames: [...tieNames, currentNickname],
+        });
+      }
     } else {
       onVerify(gp.id, true, selectedType);
     }

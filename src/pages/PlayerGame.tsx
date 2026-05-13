@@ -7,7 +7,7 @@ import { subscribeToGame, broadcastToGame } from '../lib/realtime';
 import { checkBingo } from '../lib/bingoChecker';
 import { BingoCard } from '../components/BingoCard';
 import { NumberBoard } from '../components/NumberBoard';
-import type { BingoCardData, Game, GamePlayer, Winner } from '../types';
+import type { BingoCardData, Game, GamePlayer, Winner, TieVotePayload } from '../types';
 
 const DEBOUNCE_MS = 500;
 
@@ -94,6 +94,12 @@ export const PlayerGame: React.FC = () => {
 
   // Improvement 5: Winners list from realtime
   const [winners, setWinners] = useState<Winner[]>([]);
+
+  // Tie-breaking vote state
+  const [tieVoteModal, setTieVoteModal] = useState<TieVotePayload | null>(null);
+  const [myTieVote, setMyTieVote] = useState<'accept' | 'reject' | null>(null);
+  const [tieCountdown, setTieCountdown] = useState(60);
+  const [tieVoteResult, setTieVoteResult] = useState<'accept' | 'reject' | null>(null);
 
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const cardRef = useRef<BingoCardData | null>(null);
@@ -207,6 +213,15 @@ export const PlayerGame: React.FC = () => {
       } else if (msg.type === 'tie_decision') {
         // Improvement 6: Host decided on tie
         toast(t('game.tieDecision'), { duration: 4000 });
+      } else if (msg.type === 'tie_vote') {
+        const payload = msg.payload as TieVotePayload;
+        const myId = currentPlayer?.id;
+        if (payload.tiedPlayers.some((p) => p.id === myId)) {
+          setTieVoteModal(payload);
+          setMyTieVote(null);
+          setTieVoteResult(null);
+          setTieCountdown(60);
+        }
       }
     });
     return unsubscribe;
@@ -216,6 +231,39 @@ export const PlayerGame: React.FC = () => {
   useEffect(() => {
     if (game) gameModeRef.current = game.mode;
   }, [game?.mode]);
+
+  // Tie vote countdown
+  useEffect(() => {
+    if (!tieVoteModal) return;
+    const interval = setInterval(() => {
+      setTieCountdown((prev) => {
+        if (prev <= 1) {
+          clearInterval(interval);
+          setTieVoteModal(null); // timeout = silence = loss
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [tieVoteModal]);
+
+  // Handle player's tie vote decision
+  const handleTieVote = useCallback(async (decision: 'accept' | 'reject') => {
+    if (!game || !currentPlayer || !tieVoteModal) return;
+    setMyTieVote(decision);
+    setTieVoteResult(decision);
+    await broadcastToGame(game.code, 'tie_response', {
+      playerId: currentPlayer.id,
+      decision,
+    });
+    // Close modal after short delay so the result feedback is visible
+    setTimeout(() => {
+      setTieVoteModal(null);
+      // Clear result feedback after another moment
+      setTimeout(() => setTieVoteResult(null), 2000);
+    }, 1800);
+  }, [game, currentPlayer, tieVoteModal]);
 
   // Improvement 4: Traditional mode = no auto_mark AND no cartela_cheia
   const isTraditionalMode = game
@@ -295,9 +343,105 @@ export const PlayerGame: React.FC = () => {
     return map[type] ?? type;
   };
 
+  // Build other player names for the tie modal
+  const tieOtherNames = tieVoteModal
+    ? tieVoteModal.tiedPlayers
+        .filter((p) => p.id !== currentPlayer?.id)
+        .map((p) => p.nickname)
+        .join(', ')
+    : '';
+
   return (
     <div className="min-h-screen px-4 py-6">
       <div className="max-w-4xl mx-auto">
+
+      {/* Tie Vote Modal — full-screen overlay */}
+      {tieVoteModal && myTieVote === null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: 'rgba(26,26,46,0.92)' }}
+        >
+          <div
+            className="w-full max-w-sm mx-4 rounded-3xl p-6 text-center"
+            style={{
+              background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+              border: '2px solid var(--gold)',
+              boxShadow: '0 0 40px rgba(255,204,0,0.3)',
+            }}
+          >
+            <div className="text-5xl mb-3">⚖️</div>
+            <h2 className="font-title text-3xl mb-1" style={{ color: 'var(--gold)' }}>
+              EMPATE!
+            </h2>
+            <p className="text-white/70 text-sm mb-1">
+              Você empatou com <span className="font-bold text-white">{tieOtherNames}</span>
+            </p>
+            <p className="text-white/60 text-sm mb-4">Deseja aceitar o empate?</p>
+
+            {/* Countdown */}
+            <div className="mb-5">
+              <div className="flex items-center justify-center gap-2 mb-2">
+                <span className="text-lg">⏱️</span>
+                <span className="font-bold text-xl" style={{ color: 'var(--gold)' }}>
+                  {tieCountdown} segundos
+                </span>
+              </div>
+              <div
+                className="w-full rounded-full h-2"
+                style={{ background: 'rgba(255,255,255,0.15)' }}
+              >
+                <div
+                  className="h-2 rounded-full transition-all duration-1000"
+                  style={{
+                    width: `${(tieCountdown / 60) * 100}%`,
+                    background: tieCountdown > 20 ? 'var(--gold)' : 'var(--red)',
+                  }}
+                />
+              </div>
+            </div>
+
+            {/* Action buttons */}
+            <div className="flex gap-3">
+              <button
+                className="flex-1 py-3 rounded-2xl font-bold text-base"
+                style={{ background: 'var(--green)', color: 'white' }}
+                onClick={() => handleTieVote('accept')}
+              >
+                ✅ ACEITAR
+              </button>
+              <button
+                className="flex-1 py-3 rounded-2xl font-bold text-base"
+                style={{ background: 'var(--red)', color: 'white' }}
+                onClick={() => handleTieVote('reject')}
+              >
+                ❌ RECUSAR
+              </button>
+            </div>
+
+            <p className="text-xs text-white/40 mt-3">
+              Aceitar = compartilhar prêmio &nbsp;·&nbsp; Recusar/silêncio = perder
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Tie vote result feedback */}
+      {tieVoteResult !== null && tieVoteModal === null && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center pointer-events-none"
+          style={{ background: 'rgba(26,26,46,0.85)' }}
+        >
+          <div
+            className="text-2xl font-bold px-8 py-6 rounded-2xl"
+            style={{
+              background: tieVoteResult === 'accept' ? 'rgba(26,171,90,0.9)' : 'rgba(224,32,32,0.9)',
+              color: 'white',
+            }}
+          >
+            {tieVoteResult === 'accept' ? '✅ Voto registrado!' : '❌ Você recusou'}
+          </div>
+        </div>
+      )}
         {/* Header */}
         <div className="flex items-center justify-between mb-4">
           <div className="flex items-center gap-2">

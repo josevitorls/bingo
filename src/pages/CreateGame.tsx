@@ -7,7 +7,7 @@ import { generateUniqueCode } from '../lib/gameCode';
 import { generateCard, hashCard } from '../lib/cardGenerator';
 import type { GameMode } from '../types';
 
-const ALL_MODES: GameMode[] = ['linha', 'coluna', 'diagonal', 'cartela_cheia'];
+const WIN_MODES: GameMode[] = ['linha', 'coluna', 'diagonal', 'cartela_cheia', 'primeiro_a_acertar', 'ultimo_a_acertar'];
 
 export const CreateGame: React.FC = () => {
   const navigate = useNavigate();
@@ -16,6 +16,7 @@ export const CreateGame: React.FC = () => {
   const [nickname, setNickname] = useState('');
   const [alsoJoin, setAlsoJoin] = useState(false);
   const [modes, setModes] = useState<GameMode[]>(['linha']);
+  const [autoMark, setAutoMark] = useState(false);
   const [rangeMin, setRangeMin] = useState(1);
   const [rangeMax, setRangeMax] = useState(75);
   const [drawMode, setDrawMode] = useState<'manual' | 'auto'>('manual');
@@ -35,7 +36,8 @@ export const CreateGame: React.FC = () => {
       toast.error(t('create.errors.nicknameRequired'));
       return;
     }
-    if (modes.length === 0) {
+    const winModes = modes.filter((m) => WIN_MODES.includes(m));
+    if (winModes.length === 0) {
       toast.error(t('create.errors.modeRequired'));
       return;
     }
@@ -77,6 +79,9 @@ export const CreateGame: React.FC = () => {
       // Store host token
       localStorage.setItem(`bingo_host_token_${code}`, hostToken);
 
+      // Build final modes array (include auto_mark if checked)
+      const finalModes: GameMode[] = autoMark ? [...modes, 'auto_mark'] : modes;
+
       // Create game
       const { data: game, error: gameError } = await supabase
         .from('games')
@@ -85,7 +90,7 @@ export const CreateGame: React.FC = () => {
           host_token: hostToken,
           host_player_id: playerId,
           status: 'waiting',
-          mode: modes,
+          mode: finalModes,
           number_range_min: rangeMin,
           number_range_max: rangeMax,
           auto_draw_interval: drawMode === 'auto' ? interval : null,
@@ -177,8 +182,8 @@ export const CreateGame: React.FC = () => {
           {/* Win modes */}
           <div className="glass-card p-4 sm:p-6">
             <h3 className="font-bold text-white/90 mb-3">{t('create.modes')}</h3>
-            <div className="grid grid-cols-2 gap-2">
-              {ALL_MODES.map((mode) => (
+            <div className="grid grid-cols-2 gap-2 mb-3">
+              {WIN_MODES.map((mode) => (
                 <label
                   key={mode}
                   className="flex items-center gap-2 cursor-pointer select-none p-2 rounded-lg transition-colors"
@@ -199,6 +204,24 @@ export const CreateGame: React.FC = () => {
                   </span>
                 </label>
               ))}
+            </div>
+
+            {/* Auto-mark option */}
+            <div className="border-t border-white/10 pt-3">
+              <label
+                className="flex items-start gap-3 cursor-pointer select-none p-2 rounded-lg transition-colors"
+                style={{
+                  background: autoMark ? 'rgba(255,204,0,0.15)' : 'rgba(255,255,255,0.05)',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={autoMark}
+                  onChange={(e) => setAutoMark(e.target.checked)}
+                  className="w-4 h-4 mt-0.5 shrink-0"
+                />
+                <span className="text-sm font-medium">{t('create.auto_mark_label')}</span>
+              </label>
             </div>
           </div>
 

@@ -6,7 +6,11 @@ export type RealtimeEventType =
   | 'players'
   | 'bingo'
   | 'status'
-  | 'verify';
+  | 'verify'
+  | 'winner'
+  | 'tie_decision'
+  | 'tie_vote'
+  | 'tie_response';
 
 export interface RealtimeMessage {
   type: RealtimeEventType;
@@ -47,6 +51,10 @@ export function subscribeToGame(
     'bingo',
     'status',
     'verify',
+    'winner',
+    'tie_decision',
+    'tie_vote',
+    'tie_response',
   ];
 
   for (const event of eventTypes) {

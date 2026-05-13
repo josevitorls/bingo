@@ -3,14 +3,14 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import toast from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
-import { broadcastToGame } from '../lib/realtime';
+import { broadcastToGame, subscribeToGame } from '../lib/realtime';
 import { useGame } from '../hooks/useGame';
 import { DrawPanel } from '../components/DrawPanel';
 import { PlayerList } from '../components/PlayerList';
 import { BingoNotification } from '../components/BingoNotification';
 import { BingoCard } from '../components/BingoCard';
 import { NumberBoard } from '../components/NumberBoard';
-import type { BingoCardData, GamePlayer, Winner } from '../types';
+import type { BingoCardData, GamePlayer, Winner, TieResponsePayload } from '../types';
 
 // ── Isolated last-drawn display (same as PlayerGame) ─────────────────────────
 const LastDrawnDisplay = React.memo(({ lastDrawn, t }: { lastDrawn: number | null; t: (k: string) => string }) => {
@@ -48,6 +48,16 @@ export const HostPanel: React.FC = () => {
 
   // Improvement 5: Winners tracking
   const [winners, setWinners] = useState<Winner[]>([]);
+
+  // Tie-breaking vote state
+  const [tieVote, setTieVote] = useState<{
+    tiedPlayers: { id: string; nickname: string }[];
+    winType: string;
+    responses: Record<string, 'accept' | 'reject'>;
+    startedAt: number;
+  } | null>(null);
+  const [tieCountdown, setTieCountdown] = useState(60);
+  const tieResolvedRef = useRef(false);
 
   // Host's own card state (when host also plays)
   const [hostCard, setHostCard] = useState<BingoCardData | null>(null);
@@ -253,6 +263,95 @@ export const HostPanel: React.FC = () => {
   const checkForTie = (gpId: string, winnerType: Winner['type']): Winner[] => {
     return winners.filter((w) => w.type === winnerType);
   };
+
+  // Tie-breaking: resolve with collected responses
+  const resolveTieWithResponses = useCallback(async (
+    tiedPlayers: { id: string; nickname: string }[],
+    winType: string,
+    responses: Record<string, 'accept' | 'reject'>
+  ) => {
+    if (!game) return;
+    const acceptedPlayers = tiedPlayers.filter((p) => responses[p.id] === 'accept');
+    if (acceptedPlayers.length > 0) {
+      const newWinners: Winner[] = acceptedPlayers.map((p) => ({
+        playerId: p.id,
+        nickname: p.nickname,
+        type: winType as Winner['type'],
+      }));
+      const updatedWinners = [...winners, ...newWinners];
+      setWinners(updatedWinners);
+      await broadcastToGame(game.code, 'winner', { winners: updatedWinners });
+      const names = acceptedPlayers.map((p) => p.nickname).join(', ');
+      toast.success(`Empate resolvido: ${names}`);
+    } else {
+      toast(`Nenhum jogador aceitou o empate — selecione o vencedor manualmente`, { duration: 6000, icon: '⚖️' });
+    }
+    setTieVote(null);
+    tieResolvedRef.current = true;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [game, winners]);
+
+  // Tie-breaking: start a vote
+  const handleStartTieVote = useCallback(async (
+    tiedPlayers: { id: string; nickname: string }[],
+    winType: string
+  ) => {
+    if (!game) return;
+    tieResolvedRef.current = false;
+    const startedAt = Date.now();
+    setTieVote({ tiedPlayers, winType, responses: {}, startedAt });
+    setTieCountdown(60);
+    await broadcastToGame(game.code, 'tie_vote', {
+      tiedPlayers,
+      winType,
+      startedAt,
+      timeoutSeconds: 60,
+    });
+    // Auto-resolve after 60s if not already resolved
+    setTimeout(() => {
+      if (!tieResolvedRef.current) {
+        setTieVote((prev) => {
+          if (!prev) return prev;
+          resolveTieWithResponses(prev.tiedPlayers, prev.winType, prev.responses);
+          return prev;
+        });
+      }
+    }, 60000);
+  }, [game, resolveTieWithResponses]);
+
+  // Countdown display for tie vote
+  useEffect(() => {
+    if (!tieVote) return;
+    setTieCountdown(60);
+    const interval = setInterval(() => {
+      setTieCountdown((prev) => {
+        if (prev <= 1) { clearInterval(interval); return 0; }
+        return prev - 1;
+      });
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [tieVote?.startedAt]);
+
+  // Listen for tie_response events from players
+  useEffect(() => {
+    if (!code) return;
+    const unsubscribe = subscribeToGame(code, (msg) => {
+      if (msg.type === 'tie_response') {
+        const payload = msg.payload as TieResponsePayload;
+        setTieVote((prev) => {
+          if (!prev) return prev;
+          const newResponses = { ...prev.responses, [payload.playerId]: payload.decision };
+          // Check if all tied players have voted
+          if (prev.tiedPlayers.every((p) => newResponses[p.id])) {
+            setTimeout(() => resolveTieWithResponses(prev.tiedPlayers, prev.winType, newResponses), 0);
+          }
+          return { ...prev, responses: newResponses };
+        });
+      }
+    });
+    return unsubscribe;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [code]);
 
   // Find host's own game_player entry
   const myGamePlayer: GamePlayer | undefined = currentPlayer
@@ -467,6 +566,64 @@ export const HostPanel: React.FC = () => {
               )}
             </div>
 
+            {/* Tie vote panel */}
+            {tieVote && (
+              <div
+                className="glass-card p-4 mb-0"
+                style={{ border: '2px solid #f97316' }}
+              >
+                <h2 className="text-sm font-bold mb-2" style={{ color: '#f97316' }}>
+                  ⚖️ Votação de Empate
+                </h2>
+                <div className="text-xs text-white/60 mb-2">
+                  Tipo: <span className="font-bold text-white/80">{tieVote.winType}</span>
+                </div>
+                <div className="space-y-1 mb-3">
+                  {tieVote.tiedPlayers.map((p) => {
+                    const response = tieVote.responses[p.id];
+                    return (
+                      <div key={p.id} className="flex items-center justify-between text-sm">
+                        <span className="text-white/80">{p.nickname}</span>
+                        <span
+                          className="text-xs font-bold px-2 py-0.5 rounded"
+                          style={{
+                            background: response === 'accept'
+                              ? 'rgba(26,171,90,0.2)'
+                              : response === 'reject'
+                              ? 'rgba(224,32,32,0.2)'
+                              : 'rgba(255,255,255,0.1)',
+                            color: response === 'accept'
+                              ? 'var(--green)'
+                              : response === 'reject'
+                              ? 'var(--red)'
+                              : 'rgba(255,255,255,0.5)',
+                          }}
+                        >
+                          {response === 'accept' ? '✓ Aceitar' : response === 'reject' ? '✕ Recusar' : '⏳'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex items-center gap-2 text-xs text-white/60">
+                  <span>⏱️</span>
+                  <div
+                    className="flex-1 rounded-full h-2"
+                    style={{ background: 'rgba(255,255,255,0.1)' }}
+                  >
+                    <div
+                      className="h-2 rounded-full transition-all"
+                      style={{
+                        width: `${(tieCountdown / 60) * 100}%`,
+                        background: tieCountdown > 20 ? '#f97316' : 'var(--red)',
+                      }}
+                    />
+                  </div>
+                  <span className="font-bold" style={{ color: '#f97316' }}>{tieCountdown}s</span>
+                </div>
+              </div>
+            )}
+
             {/* Bingo notifications */}
             <div className="glass-card p-4">
               <h2 className="text-white/70 text-sm font-semibold mb-3 uppercase tracking-wide">
@@ -479,6 +636,7 @@ export const HostPanel: React.FC = () => {
                 hostToken={hostToken ?? ''}
                 onVerify={handleVerifyBingo}
                 winners={winners}
+                onStartTieVote={handleStartTieVote}
               />
             </div>
           </div>
